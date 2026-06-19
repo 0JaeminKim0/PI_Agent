@@ -94,6 +94,15 @@ async def process(file: UploadFile = File(...)):
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, f"지원하지 않는 형식: {ext}. PDF 또는 PPTX만 가능합니다.")
 
+    # API 키 사전 체크 — 분석은 Claude 필요. 키 없으면 명확히 안내(503).
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(
+            503,
+            "ANTHROPIC_API_KEY가 설정되지 않아 문서 분석을 할 수 없습니다. "
+            "서버(Railway) 환경변수에 Claude API 키를 등록해 주세요. "
+            "(키 없이도 '데모 데이터로 바로 Excel'은 사용 가능합니다.)",
+        )
+
     sid = uuid.uuid4().hex
     sdir = os.path.join(WORK_DIR, sid)
     img_dir = os.path.join(sdir, "pages")
@@ -136,7 +145,20 @@ async def process(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"{type(e).__name__}: {e}")
+        msg = str(e)
+        name = type(e).__name__
+        # Claude API 관련 에러를 사용자 친화적으로 구분
+        if "authentication" in msg.lower() or "401" in msg or "invalid x-api-key" in msg.lower():
+            raise HTTPException(401, "Claude API 인증 실패: API 키가 올바른지 확인해 주세요.")
+        if "not_found" in msg.lower() or "model" in msg.lower() and "404" in msg:
+            raise HTTPException(
+                422,
+                f"Claude 모델을 찾을 수 없습니다. 환경변수 ANTHROPIC_EXTRACT_MODEL/"
+                f"ANTHROPIC_INDEX_MODEL의 모델명을 확인해 주세요. ({msg})",
+            )
+        if "rate_limit" in msg.lower() or "429" in msg:
+            raise HTTPException(429, "Claude API 호출 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.")
+        raise HTTPException(500, f"{name}: {msg}")
 
 
 @app.get("/api/session/{sid}/page/{page_no}")

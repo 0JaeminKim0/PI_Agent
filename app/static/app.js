@@ -113,11 +113,25 @@ async function processFile() {
     toast("분석 완료 — 검토 후 다운로드하세요.", "success");
   } catch (e) {
     toast("오류: " + e.message, "error");
+    showErrorBanner(e.message);
     setStep(1);
   } finally {
     $("#procStatus").classList.add("hidden");
     $("#processBtn").disabled = false;
   }
+}
+
+function showErrorBanner(msg) {
+  let box = document.getElementById("errBanner");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "errBanner";
+    box.className = "mt-4 bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-3 text-sm";
+    $("#procStatus").after(box);
+  }
+  box.innerHTML = `<i class="fas fa-circle-exclamation mr-1"></i>${escapeHtml(msg)}`;
+  box.classList.remove("hidden");
+  setTimeout(() => box && box.classList.add("hidden"), 12000);
 }
 
 // ---------- review gate ----------
