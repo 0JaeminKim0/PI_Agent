@@ -1,0 +1,9 @@
+# Railway / Nixpacks 빌드 설정
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+cmds = ["pip install --no-cache-dir -r requirements.txt"]
+
+[start]
+cmd = "cd app && uvicorn main:app --host 0.0.0.0 --port $PORT"

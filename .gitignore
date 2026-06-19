@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Env / secrets
+.env
+.dev.vars
+*.key
+
+# Uploads / work
+app/uploads/
+pi_agent_work/
+*.tmp
+
+# OS / editor
+.DS_Store
+*.swp
+
+# PM2 / logs
+.pm2/
+logs/
+*.log
+
+# Node (unused, just in case)
+node_modules/
