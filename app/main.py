@@ -27,7 +27,7 @@ except Exception:
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 
-from extract import normalize, Document
+from extract import normalize, Document, CorruptDocumentError
 from indexer import build_index, index_document
 from extractor import extract_task
 from validate import validate, SOLUTION_WHITELIST
@@ -113,7 +113,10 @@ async def process(file: UploadFile = File(...)):
 
     try:
         # ① 정규화
-        doc: Document = normalize(up_path, img_dir)
+        try:
+            doc: Document = normalize(up_path, img_dir)
+        except CorruptDocumentError as ce:
+            raise HTTPException(422, str(ce))
         if doc.page_count == 0:
             raise HTTPException(400, "문서에서 페이지를 읽지 못했습니다.")
 

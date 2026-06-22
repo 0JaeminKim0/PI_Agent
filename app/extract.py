@@ -44,6 +44,10 @@ class Document:
         return "\n\n".join(out)
 
 
+class CorruptDocumentError(Exception):
+    """PDF/PPTX 파일이 손상/잘림 등으로 열리지 않을 때."""
+
+
 def extract_pdf(path: str, image_dir: str, dpi: int = 110) -> Document:
     import pdfplumber
     import fitz  # PyMuPDF
@@ -51,15 +55,29 @@ def extract_pdf(path: str, image_dir: str, dpi: int = 110) -> Document:
     doc = Document(kind="pdf")
     os.makedirs(image_dir, exist_ok=True)
 
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+
     # 텍스트
     texts: dict[int, str] = {}
-    with pdfplumber.open(path) as pdf:
-        for i, page in enumerate(pdf.pages, start=1):
-            t = page.extract_text(layout=True) or page.extract_text() or ""
-            texts[i] = t
+    try:
+        with pdfplumber.open(path) as pdf:
+            for i, page in enumerate(pdf.pages, start=1):
+                t = page.extract_text(layout=True) or page.extract_text() or ""
+                texts[i] = t
+    except Exception as e:  # PdfminerException(Unexpected EOF) 등
+        raise CorruptDocumentError(
+            f"PDF를 열 수 없습니다(파일 손상/업로드 잘림 가능). "
+            f"현재 크기 {size:,}바이트. 원본 파일을 다시 업로드해 주세요. (원인: {e})"
+        ) from e
 
     # 페이지 이미지 (PNG)
-    fdoc = fitz.open(path)
+    try:
+        fdoc = fitz.open(path)
+    except Exception as e:
+        raise CorruptDocumentError(
+            f"PDF 페이지 렌더링에 실패했습니다(파일 손상/업로드 잘림 가능). "
+            f"현재 크기 {size:,}바이트. 원본 파일을 다시 업로드해 주세요. (원인: {e})"
+        ) from e
     zoom = dpi / 72.0
     mat = fitz.Matrix(zoom, zoom)
     for i in range(fdoc.page_count):
