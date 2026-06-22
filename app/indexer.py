@@ -119,3 +119,28 @@ def build_index(text_index: str) -> dict:
                   f"(stop_reason={getattr(resp, 'stop_reason', '?')}, input={total}자)")
             return result
     raise ValueError("인덱싱 결과(tool_use)를 받지 못했습니다.")
+
+
+def index_document(doc, per_page: int = 1800) -> tuple[dict, str]:
+    """
+    ② 하이브리드 인덱싱 진입점.
+    1) 코드 인덱서(규칙 기반) 우선 시도
+    2) 코드가 None(과제<2 또는 과제명 부족)이면 Haiku 폴백
+    반환: (index_dict, method)  method ∈ {"code","llm"}
+    """
+    from code_indexer import build_code_index
+
+    # 1) 코드 우선
+    try:
+        code_idx = build_code_index(doc)
+    except Exception as e:
+        print(f"[index_document] 코드 인덱서 예외 → LLM 폴백: {e}")
+        code_idx = None
+
+    if code_idx and len(code_idx.get("tasks", [])) >= 2:
+        return code_idx, "code"
+
+    # 2) Haiku 폴백
+    print("[index_document] LLM(Haiku) 폴백 실행")
+    llm_idx = build_index(doc.text_index(max_chars_per_page=per_page))
+    return llm_idx, "llm"

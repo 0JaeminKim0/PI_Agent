@@ -28,7 +28,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 
 from extract import normalize, Document
-from indexer import build_index
+from indexer import build_index, index_document
 from extractor import extract_task
 from validate import validate, SOLUTION_WHITELIST
 from analyze import load_demo_data
@@ -117,14 +117,14 @@ async def process(file: UploadFile = File(...)):
         if doc.page_count == 0:
             raise HTTPException(400, "문서에서 페이지를 읽지 못했습니다.")
 
-        # ② 인덱싱 (Haiku)
-        # 페이지가 많으면 페이지당 스니펫을 줄여 모든 페이지가 입력에 포함되도록 한다.
+        # ② 인덱싱 (하이브리드: 코드 우선 → 실패 시 Haiku 폴백)
+        # 페이지가 많으면 LLM 폴백 시 페이지당 스니펫을 줄여 전 페이지 포함 보장.
         per_page = 1800 if doc.page_count <= 60 else (900 if doc.page_count <= 150 else 600)
-        index = build_index(doc.text_index(max_chars_per_page=per_page))
+        index, index_method = index_document(doc, per_page=per_page)
         if not index.get("tasks"):
             raise HTTPException(422, "구조 인덱싱에서 혁신과제를 찾지 못했습니다.")
         print(f"[process] page_count={doc.page_count}, per_page={per_page}, "
-              f"tasks={len(index.get('tasks', []))}")
+              f"method={index_method}, tasks={len(index.get('tasks', []))}")
 
         # ③ 추출 (Opus, 과제 단위 청크) — 한 과제 실패해도 나머지는 진행
         extracted = []
@@ -157,15 +157,22 @@ async def process(file: UploadFile = File(...)):
                 "msg": er["error"][:200],
             })
 
+        # 인덱싱 방식 정보 플래그
+        method_label = "코드(규칙 기반)" if index_method == "code" else "LLM(Haiku 폴백)"
+        result["flags"].append({
+            "level": "info", "scope": "인덱싱 방식",
+            "msg": f"{method_label}로 {idx_n}개 혁신과제를 인덱싱했습니다.",
+        })
+
         SESSIONS[sid] = {
             "doc": doc, "index": index, "extracted": extracted,
             "data": result["data"], "enriched": result["enriched"],
             "flags": result["flags"], "kind": doc.kind,
-            "page_count": doc.page_count,
+            "page_count": doc.page_count, "index_method": index_method,
         }
         return JSONResponse({
             "ok": True, "session_id": sid, "kind": doc.kind,
-            "page_count": doc.page_count,
+            "page_count": doc.page_count, "index_method": index_method,
             "enriched": result["enriched"], "flags": result["flags"],
             "data": result["data"],
         })
