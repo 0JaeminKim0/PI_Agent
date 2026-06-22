@@ -36,6 +36,20 @@ EXTRACT_TOOL = {
             "task_id": {"type": "string"},
             "task_name": _FIELD,
             "task_overview": _FIELD,   # D 과제개요
+            "owner_by_bu": {           # 사업부별 과제오너 (코드 파서 폴백용)
+                "type": "object",
+                "description": (
+                    "'적용 사업부 / 과제 오너' 표에서 사업부→오너명(예: '박상훈 상무'). "
+                    "N/A·해당없음은 생략. 키는 문서에 실제 나온 사업부만 사용: "
+                    "조선/미포/삼호/해양/특수/HD한조/HHIP/HVS."
+                ),
+                "properties": {
+                    "조선": {"type": "string"}, "미포": {"type": "string"},
+                    "삼호": {"type": "string"}, "해양": {"type": "string"},
+                    "특수": {"type": "string"}, "HD한조": {"type": "string"},
+                    "HHIP": {"type": "string"}, "HVS": {"type": "string"},
+                },
+            },
             "effect_q": _FIELD,        # S 기대효과-정성
             "effect_n": _FIELD,        # T 기대효과-정량 (수치 없으면 value="")
             "subtasks": {
@@ -61,6 +75,8 @@ PI 검토 결과서 스키마로 추출하는 전문가다. 반드시 extract_ta
 
 [추출 규칙]
 - task_overview(D): 과제정의 + 추진목적을 요약.
+- owner_by_bu: '적용 사업부 / 과제 오너' 표를 정확히 읽어 사업부→오너명으로 채운다.
+  사업부 헤더와 오너 셀을 좌우로 1:1 정렬할 것. N/A 칸은 넣지 말 것.
 - definition(G): 구현방안/구현내용을 1~2문장, 명사형 종결('~한다/~함')로 요약.
 - solution(R): 문서의 '검토 솔루션'. 다음 화이트리스트 표기만 사용: {", ".join(SOLUTION_WHITELIST)}.
   여러 개면 쉼표로. 문서에 없으면 value="".

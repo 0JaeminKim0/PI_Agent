@@ -143,6 +143,18 @@ async def process(file: UploadFile = File(...)):
         if not extracted:
             raise HTTPException(502, f"모든 혁신과제 추출에 실패했습니다: {extract_errors}")
 
+        # 오너 보강: 코드 인덱서가 오너 표를 못 잡았으면 Opus가 뽑은 owner_by_bu로 폴백
+        if not index.get("owner_by_bu"):
+            merged_owner: dict = {}
+            for t in extracted:
+                ob = t.get("owner_by_bu") or {}
+                for k, v in ob.items():
+                    if v and not merged_owner.get(k):
+                        merged_owner[k] = v
+            if merged_owner:
+                index["owner_by_bu"] = merged_owner
+                print(f"[process] 오너 Opus 폴백 적용: {merged_owner}")
+
         # ④ 검증 (코드)
         result = validate(index, extracted)
 

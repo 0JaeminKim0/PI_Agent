@@ -40,6 +40,19 @@ RE_SUB_LINE = re.compile(r"^(\d{1,2})\.(\d{1,2})(?!\d)\s+(.+)$")
 # 도메인: '생산계획(PS)' 처럼 한글+영문약어(괄호)
 RE_DOMAIN = re.compile(r"([가-힣A-Za-z]+\s?\(\s?[A-Za-z]{1,6}\s?\))")
 
+# 오너/사업부 표 (두 줄 짝짓기)
+RE_BU_HEADER = re.compile(r"적용\s?사업부\s+(.+)")
+RE_OWNER_ROW = re.compile(r"(?:및\s?)?과제\s?오너\s+(.+)")
+RE_TITLE = re.compile(r"(상무|전무|부사장|사장|이사|부장|상무보|전무보)")
+
+# 문서 사업부 표기 → fill_template/검증 컬럼 키 매핑
+BU_HEADER_MAP = {
+    "조선": "조선", "해양": "해양", "특수선": "특수", "특수": "특수",
+    "미포": "미포", "삼호": "삼호",
+    "한조": "HD한조", "한국조선해양": "HD한조", "KSOE": "HD한조",
+    "HHIP": "HHIP", "HVS": "HVS",
+}
+
 
 def _collapse(s: str) -> str:
     """다중 공백/탭을 공백 1개로. layout 추출 보정."""
@@ -81,16 +94,61 @@ def _domain(doc: Document) -> str:
     return fallback
 
 
-def _owner_text(doc: Document) -> str:
-    """'과제오너' 명단 또는 '상무/전무(소속)' 다수 등장 라인."""
-    for p in doc.pages[:30]:
-        for raw in (p.text or "").splitlines():
-            line = _collapse(raw)
-            if ("과제오너" in line or "과제 오너" in line) and "(" in line:
-                return line.split(":", 1)[-1].strip()
-            if re.search(r"(상무|전무|부사장|사장|이사|부장)\s?\(", line) and line.count("(") >= 2:
-                return line
-    return ""
+def _group_owner_tokens(headers: list[str], owner_raw: str) -> dict[str, str]:
+    """'N/A N/A 박상훈 상무 최해주 상무 ...' 를 사업부 헤더 순서대로 1:1 매핑.
+
+    그룹핑 규칙:
+      - 'N/A' / '-' → 한 칸(빈 오너)
+      - '이름 + 직책(상무/전무/...)' → 2토큰이 한 칸
+      - 직책 없는 단독 토큰도 한 칸으로 처리(방어)
+    반환: {컬럼키('조선'..): '박상훈 상무'}
+    """
+    toks = owner_raw.split()
+    cells: list[str] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t.upper() in ("N/A", "NA", "-", "·", "—"):
+            cells.append("")
+            i += 1
+            continue
+        # 이름 + 직책 묶기
+        if i + 1 < len(toks) and RE_TITLE.fullmatch(toks[i + 1]):
+            cells.append(f"{t} {toks[i + 1]}")
+            i += 2
+        else:
+            cells.append(t)
+            i += 1
+
+    mapping: dict[str, str] = {}
+    for h, cell in zip(headers, cells):
+        col = BU_HEADER_MAP.get(h)
+        if col and cell:
+            mapping[col] = cell
+    return mapping
+
+
+def _owner_bu(doc: Document) -> tuple[dict[str, str], str]:
+    """과제 개요 페이지의 '적용 사업부' + '과제 오너' 두 줄을 짝지어
+    사업부별 오너명을 코드로 정확히 추출.
+    반환: (owner_by_bu{'조선':'박상훈 상무',...}, owner_text(원문 한 줄)).
+    """
+    for p in doc.pages[:160]:
+        lines = [_collapse(l) for l in (p.text or "").splitlines()]
+        headers = None
+        owner_raw = None
+        for l in lines:
+            mh = RE_BU_HEADER.match(l)
+            if mh:
+                headers = mh.group(1).split()
+            mo = RE_OWNER_ROW.match(l)
+            if mo:
+                owner_raw = mo.group(1).strip()
+            if headers and owner_raw:
+                mapping = _group_owner_tokens(headers, owner_raw)
+                if mapping:
+                    return mapping, owner_raw
+    return {}, ""
 
 
 def _sid_key(sid: str):
@@ -199,9 +257,11 @@ def build_code_index(doc: Document) -> dict | None:
             "subtasks": subs,
         })
 
+    owner_by_bu, owner_text = _owner_bu(doc)
     result = {
         "domain": _domain(doc),
-        "owner_text": _owner_text(doc),
+        "owner_text": owner_text,
+        "owner_by_bu": owner_by_bu,   # {'조선':'박상훈 상무', ...} — 코드로 정확 추출
         "tasks": out_tasks,
     }
 

@@ -66,6 +66,25 @@ def infer_owner_bu_map(owner_text: str) -> dict:
     return m
 
 
+def build_owner_bu_map(owner_by_bu: dict | None, owner_text: str) -> tuple[dict, str]:
+    """사업부 적용여부(I~P, "O"/"")와 Q컬럼 오너 표기 문자열을 만든다.
+    1순위: 코드 인덱서가 정확히 뽑은 owner_by_bu({'조선':'박상훈 상무',...})
+    2순위: owner_text 정규식 추정(폴백).
+    반환: (owner_bu_map{'조선':'O',...}, owner_display)
+    """
+    m = {k: "" for k in BU_KEYS}
+    if owner_by_bu:
+        for col, name in owner_by_bu.items():
+            if col in m and name:
+                m[col] = "O"
+        # Q컬럼 표기: '조선:박상훈 상무 / 미포:최해주 상무 ...' (사업부순)
+        order = [c for c in BU_KEYS if c in owner_by_bu]
+        display = " / ".join(f"{c}:{owner_by_bu[c]}" for c in order if owner_by_bu.get(c))
+        return m, (display or owner_text)
+    # 폴백: 텍스트 추정
+    return infer_owner_bu_map(owner_text), owner_text
+
+
 def validate(index: dict, extracted_tasks: list[dict]) -> dict:
     """
     index: ②결과, extracted_tasks: ③결과 리스트(task별).
@@ -76,11 +95,16 @@ def validate(index: dict, extracted_tasks: list[dict]) -> dict:
     """
     flags: list[dict] = []
     domain = index.get("domain", "")
-    owner_text = index.get("owner_text", "")
-    owner_bu_map = infer_owner_bu_map(owner_text)
+    owner_text_in = index.get("owner_text", "")
+    owner_by_bu = index.get("owner_by_bu") or {}
+    owner_bu_map, owner_text = build_owner_bu_map(owner_by_bu, owner_text_in)
     if not any(v == "O" for v in owner_bu_map.values()):
         flags.append({"level": "warn", "scope": "owner",
                       "msg": "오너→사업부 매핑이 비었습니다. 수동 확인 필요."})
+    elif owner_by_bu:
+        applied = ", ".join(f"{c}={owner_by_bu[c]}" for c in owner_by_bu if owner_by_bu.get(c))
+        flags.append({"level": "info", "scope": "오너 매핑(코드)",
+                      "msg": f"사업부별 오너 자동 매핑: {applied}"})
 
     # 인덱스의 세부과제 개수 맵
     idx_counts = {t.get("task_id"): len(t.get("subtasks", [])) for t in index.get("tasks", [])}
