@@ -118,17 +118,44 @@ async def process(file: UploadFile = File(...)):
             raise HTTPException(400, "문서에서 페이지를 읽지 못했습니다.")
 
         # ② 인덱싱 (Haiku)
-        index = build_index(doc.text_index())
+        # 페이지가 많으면 페이지당 스니펫을 줄여 모든 페이지가 입력에 포함되도록 한다.
+        per_page = 1800 if doc.page_count <= 60 else (900 if doc.page_count <= 150 else 600)
+        index = build_index(doc.text_index(max_chars_per_page=per_page))
         if not index.get("tasks"):
             raise HTTPException(422, "구조 인덱싱에서 혁신과제를 찾지 못했습니다.")
+        print(f"[process] page_count={doc.page_count}, per_page={per_page}, "
+              f"tasks={len(index.get('tasks', []))}")
 
-        # ③ 추출 (Opus, 과제 단위 청크)
+        # ③ 추출 (Opus, 과제 단위 청크) — 한 과제 실패해도 나머지는 진행
         extracted = []
+        extract_errors = []
         for task_meta in index["tasks"]:
-            extracted.append(extract_task(doc, task_meta))
+            tid = task_meta.get("task_id", "?")
+            try:
+                extracted.append(extract_task(doc, task_meta))
+                print(f"[process] 과제 {tid} 추출 완료")
+            except Exception as ex:
+                extract_errors.append({"task_id": tid, "error": str(ex)})
+                print(f"[process] 과제 {tid} 추출 실패: {ex}")
+        if not extracted:
+            raise HTTPException(502, f"모든 혁신과제 추출에 실패했습니다: {extract_errors}")
 
         # ④ 검증 (코드)
         result = validate(index, extracted)
+
+        # 인덱스 과제 수 ↔ 실제 추출 과제 수 대조 (누락 감지)
+        idx_n = len(index.get("tasks", []))
+        got_n = len(extracted)
+        if got_n < idx_n:
+            result["flags"].insert(0, {
+                "level": "warn", "scope": "추출 누락",
+                "msg": f"인덱스가 찾은 혁신과제 {idx_n}개 중 {got_n}개만 추출됨.",
+            })
+        for er in extract_errors:
+            result["flags"].insert(0, {
+                "level": "warn", "scope": f"과제 {er['task_id']} 추출 실패",
+                "msg": er["error"][:200],
+            })
 
         SESSIONS[sid] = {
             "doc": doc, "index": index, "extracted": extracted,

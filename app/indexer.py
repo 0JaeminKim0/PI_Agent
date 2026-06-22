@@ -87,19 +87,35 @@ def build_index(text_index: str) -> dict:
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY 가 설정되지 않았습니다.")
 
+    # 입력 길이 진단 (잘림 여부 파악)
+    total = len(text_index)
+    INPUT_LIMIT = 400000  # 과제 누락 방지: 입력 컷오프를 크게
+    if total > INPUT_LIMIT:
+        print(f"[indexer] WARNING: 입력 텍스트 {total}자 > {INPUT_LIMIT}자 → 뒷부분 잘림 가능")
+    payload = text_index[:INPUT_LIMIT]
+
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
         model=HAIKU_MODEL,
-        max_tokens=4000,
+        max_tokens=8000,  # tool_use JSON 출력 잘림 방지 (3+ 과제 전체 페이지맵)
         system=SYSTEM,
         tools=[INDEX_TOOL],
         tool_choice={"type": "tool", "name": "build_index"},
         messages=[{
             "role": "user",
-            "content": f"다음은 페이지별 텍스트 인덱스다. 페이지 지도를 만들어라.\n\n{text_index[:150000]}",
+            "content": f"다음은 페이지별 텍스트 인덱스다. 문서의 '모든' 혁신과제를 빠짐없이 매핑하라.\n\n{payload}",
         }],
     )
+
+    # 출력이 max_tokens 로 잘리면 tool_use JSON 이 불완전해져 과제가 누락됨
+    if getattr(resp, "stop_reason", "") == "max_tokens":
+        print("[indexer] ERROR: 출력이 max_tokens 로 잘렸습니다. 일부 과제 누락 가능.")
+
     for block in resp.content:
         if getattr(block, "type", "") == "tool_use" and block.name == "build_index":
-            return block.input
+            result = block.input
+            n = len(result.get("tasks", []))
+            print(f"[indexer] 혁신과제 {n}개 인덱싱됨 "
+                  f"(stop_reason={getattr(resp, 'stop_reason', '?')}, input={total}자)")
+            return result
     raise ValueError("인덱싱 결과(tool_use)를 받지 못했습니다.")
