@@ -19,8 +19,10 @@
 ## 기능 / API
 | 경로 | 메서드 | 설명 |
 |---|---|---|
-| `/` | GET | 대시보드 UI |
-| `/api/health` | GET | 상태·API키 여부·솔루션 화이트리스트 |
+| `/` | GET | 대시보드 UI (**미인증 시 접속 코드 입력 화면**) |
+| `/api/login` | POST `{code}` | 접속 코드 검증 → 서명 쿠키(`pi_gate`, 8h) 발급 |
+| `/api/logout` | POST | 접속 쿠키 삭제 |
+| `/api/health` | GET | 상태·API키 여부·솔루션 화이트리스트 (공개) |
 | `/api/process` | POST (file) | 업로드 → ①~④ 수행, 검토용 enriched/flags 반환 |
 | `/api/session/{sid}/page/{n}` | GET | 출처 페이지 이미지(PDF) / 텍스트(PPTX) |
 | `/api/session/{sid}/page/{n}/text` | GET | 페이지 원문 텍스트 |
@@ -40,10 +42,19 @@ cd app && uvicorn main:app --host 0.0.0.0 --port 3000
 `.env.example` 을 `.env` 로 복사하고 `ANTHROPIC_API_KEY` 를 채우면 분석까지 동작합니다.
 (키가 없어도 "데모 데이터로 바로 Excel" 은 동작)
 
+## 접속 게이트(접속 코드)
+사이트 진입 시 접속 코드 입력 화면이 뜹니다. 코드가 맞으면 서명된 HttpOnly 쿠키(`pi_gate`, 8시간)를 발급하고,
+이후 모든 페이지·API(`/api/health` 제외)는 이 쿠키가 있어야 접근 가능합니다.
+- 기본 접속 코드: **`palantir1!`** (환경변수 `ACCESS_CODE` 로 변경)
+- 쿠키 서명 키: `SECRET_KEY`(선택). 재배포 후에도 로그인 유지하려면 고정 문자열 지정.
+- 서버 측 검증이므로 프론트만 우회해도 API는 401 로 차단됩니다.
+
 ## Railway 배포
 1. GitHub 저장소 연결 또는 `railway up`
 2. **Variables** 에 환경변수 등록:
    - `ANTHROPIC_API_KEY` (필수)
+   - `ACCESS_CODE` (선택, 기본 `palantir1!` — 접속 코드)
+   - `SECRET_KEY` (선택 — 쿠키 서명 키, 긴 랜덤 문자열 권장)
    - `ANTHROPIC_INDEX_MODEL` (선택, 기본 `claude-3-5-haiku-20241022`)
    - `ANTHROPIC_EXTRACT_MODEL` (선택, 기본 `claude-opus-4-20250514`)
 3. 빌드: Nixpacks(`nixpacks.toml`) · 시작: `cd app && uvicorn main:app --host 0.0.0.0 --port $PORT`

@@ -24,8 +24,11 @@ try:
 except Exception:
     pass
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+import hmac
+import hashlib
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse, Response
 
 from extract import normalize, Document, CorruptDocumentError
 from indexer import build_index, index_document
@@ -42,10 +45,117 @@ os.makedirs(WORK_DIR, exist_ok=True)
 
 ALLOWED_EXT = {".pdf", ".pptx", ".ppt"}
 
+# 미인증 시 보여줄 접속 코드 입력 화면 (단독 HTML)
+_LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ko"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>PI Agent · 접속 인증</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+</head>
+<body class="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#003561] via-[#0a4f8a] to-[#00a4a6] p-4">
+  <div class="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-8">
+    <div class="flex flex-col items-center text-center mb-6">
+      <div class="w-14 h-14 rounded-xl bg-[#003561] flex items-center justify-center mb-3">
+        <i class="fas fa-lock text-[#00a4a6] text-2xl"></i>
+      </div>
+      <h1 class="text-xl font-bold text-slate-800">PI Agent</h1>
+      <p class="text-sm text-slate-500 mt-1">검토 결과서 생성기 · 접속 인증</p>
+    </div>
+    <form id="loginForm" class="space-y-3">
+      <label class="block text-sm font-medium text-slate-600">접속 코드</label>
+      <input id="codeInput" type="password" autocomplete="off" autofocus
+        class="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-[#1a73c2] focus:border-[#1a73c2] outline-none"
+        placeholder="접속 코드를 입력하세요"/>
+      <p id="errMsg" class="hidden text-sm text-red-600"><i class="fas fa-circle-exclamation mr-1"></i><span></span></p>
+      <button type="submit" id="loginBtn"
+        class="w-full py-3 rounded-lg bg-[#003561] hover:bg-[#0a4f8a] text-white font-semibold transition">
+        <i class="fas fa-arrow-right-to-bracket mr-1"></i> 접속
+      </button>
+    </form>
+    <p class="text-[11px] text-slate-400 text-center mt-5">권한이 있는 사용자만 접근할 수 있습니다.</p>
+  </div>
+<script>
+const form=document.getElementById('loginForm'),inp=document.getElementById('codeInput'),
+  err=document.getElementById('errMsg'),btn=document.getElementById('loginBtn');
+form.addEventListener('submit',async(e)=>{
+  e.preventDefault();
+  err.classList.add('hidden');
+  btn.disabled=true; btn.innerHTML='<i class="fas fa-circle-notch fa-spin mr-1"></i> 확인 중';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({code:inp.value})});
+    if(r.ok){ location.reload(); return; }
+    const d=await r.json().catch(()=>({}));
+    err.querySelector('span').textContent=d.detail||'접속 코드가 올바르지 않습니다.';
+    err.classList.remove('hidden'); inp.select();
+  }catch(_){ err.querySelector('span').textContent='네트워크 오류. 다시 시도해 주세요.'; err.classList.remove('hidden'); }
+  btn.disabled=false; btn.innerHTML='<i class="fas fa-arrow-right-to-bracket mr-1"></i> 접속';
+});
+</script>
+</body></html>"""
+
 app = FastAPI(title="PI Agent Dashboard")
 
 # 세션 저장소 (메모리). Railway 단일 인스턴스 기준.
 SESSIONS: dict[str, dict] = {}
+
+# ---------- 접속 게이트 (접속 코드 → 서명 쿠키) ----------
+ACCESS_CODE = os.environ.get("ACCESS_CODE", "palantir1!")
+# 쿠키 서명 키 (배포 시 SECRET_KEY 지정 권장). 미지정 시 코드 기반 파생.
+_SECRET = os.environ.get("SECRET_KEY", "pi-agent-" + hashlib.sha256(ACCESS_CODE.encode()).hexdigest()[:16])
+AUTH_COOKIE = "pi_gate"
+# 인증 없이 접근 허용하는 경로 (로그인/헬스/파비콘/정적자원)
+_OPEN_PATHS = {"/api/login", "/api/health", "/favicon.ico"}
+
+
+def _auth_token() -> str:
+    """현재 접속 코드에 대한 결정적 서명 토큰."""
+    return hmac.new(_SECRET.encode(), ACCESS_CODE.encode(), hashlib.sha256).hexdigest()
+
+
+def _is_authed(request: Request) -> bool:
+    return hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), _auth_token())
+
+
+@app.middleware("http")
+async def gate_middleware(request: Request, call_next):
+    path = request.url.path
+    # 정적 자원과 공개 경로는 통과
+    if path.startswith("/static/") or path in _OPEN_PATHS:
+        return await call_next(request)
+    if _is_authed(request):
+        return await call_next(request)
+    # 미인증: 루트는 로그인 화면 HTML, API는 401 JSON
+    if path == "/" or not path.startswith("/api/"):
+        return HTMLResponse(_LOGIN_HTML, status_code=401)
+    return JSONResponse({"detail": "접속 코드가 필요합니다.", "auth_required": True}, status_code=401)
+
+
+@app.post("/api/login")
+async def login(request: Request):
+    """접속 코드 검증 → 맞으면 서명 쿠키 발급."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    code = (body.get("code") or "").strip()
+    if not hmac.compare_digest(code, ACCESS_CODE):
+        raise HTTPException(401, "접속 코드가 올바르지 않습니다.")
+    resp = JSONResponse({"ok": True})
+    # HttpOnly 쿠키 (JS 탈취 방지). 8시간 유지.
+    resp.set_cookie(
+        AUTH_COOKIE, _auth_token(),
+        max_age=8 * 3600, httponly=True, samesite="lax", path="/",
+    )
+    return resp
+
+
+@app.post("/api/logout")
+async def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(AUTH_COOKIE, path="/")
+    return resp
 
 
 # ---------- 공통: 기존 fill_template.py 호출 (코드 변경 없음) ----------
